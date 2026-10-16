@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Three Roads, One Car</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 20px 12px; background: #091216; color: #e5e7eb; font-family: system-ui, -apple-system, Segoe UI, sans-serif; }
+  .game { width: min(100%, 540px); margin: 0 auto; padding: 14px; border: 1px solid #28434a; border-radius: 18px; background: linear-gradient(160deg,#12252b,#071116); }
+  .hud { display: flex; gap: 8px; margin-bottom: 10px; }
+  .stat { flex: 1; min-width: 0; padding: 8px 12px; border: 1px solid #315159; border-radius: 10px; background: #172f35; }
+  .label { color: #a1b6ba; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; }
+  .number { color: #b8ff69; font-size: 22px; font-weight: 800; line-height: 1.25; }
+  canvas { display: block; width: 100%; height: auto; border-radius: 12px; background: #10251f; touch-action: manipulation; }
+  .status { min-height: 20px; margin: 9px 0; text-align: center; font-size: 14px; font-weight: 700; color: #dcfce7; }
+  .controls { display: flex; gap: 10px; }
+  button { flex: 1; padding: 13px 7px; border: 1px solid #3a5d63; border-radius: 12px; background: #1b353b; color: white; font: inherit; font-weight: 800; cursor: pointer; touch-action: manipulation; }
+  button:active { background: #3f6263; transform: scale(.98); }
+  button.start { border: 0; background: #b8ff69; color: #122016; }
+  .hint { margin-top: 10px; color: #a9c0c3; text-align: center; font-size: 12px; }
+</style>
+</head>
+<body>
+<main class="game" id="roadgame">
+  <div class="hud">
+    <div class="stat"><div class="label">Score</div><div class="number" id="score">0</div></div>
+    <div class="stat"><div class="label">Best</div><div class="number" id="best">0</div></div>
+    <div class="stat"><div class="label">Speed</div><div class="number" id="speed">1.0x</div></div>
+  </div>
+  <canvas id="gameCanvas" width="480" height="650" aria-label="Three lane driving game"></canvas>
+  <div class="status" id="status" aria-live="polite">Ready to race?</div>
+  <div class="controls">
+    <button type="button" id="left">⬅ LEFT</button>
+    <button type="button" id="start" class="start">▶ START</button>
+    <button type="button" id="right">RIGHT ➡</button>
+  </div>
+  <div class="hint">Use ← → arrow keys or A / D to switch lanes. Collect stars for bonus points.</div>
+</main>
+<script>
+(() => {
+  'use strict';
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const bestEl = document.getElementById('best');
+  const speedEl = document.getElementById('speed');
+  const statusEl = document.getElementById('status');
+  const startBtn = document.getElementById('start');
+  const W = canvas.width, H = canvas.height;
+  const ROAD_X = 60, ROAD_W = 360, LANE_W = 120;
+  const CAR_Y = 530, CAR_W = 48, CAR_H = 77;
+  let lane = 1, obstacles = [], coins = [], score = 0, best = 0;
+  let running = false, over = false, lastTime = 0;
+  let speed = 240, spawnClock = 0.5, coinClock = 2.5, roadOffset = 0;
+  let animationId = 0;
+  try { best = Number(localStorage.getItem('threeRoadsBest') || 0); } catch (_) { best = 0; }
+  bestEl.textContent = String(best);
+
+  const laneCenter = n => ROAD_X + LANE_W * n + LANE_W / 2;
+  function roundedRect(x, y, w, h, r, fill, stroke) {
+    r = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+    if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.stroke(); }
+  }
+  function drawRoad() {
+    const bg = ctx.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#183c30'); bg.addColorStop(1, '#0d211d');
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+    for (let i = 0; i < 20; i++) {
+      const y = ((i * 79 + roadOffset * 0.7) % (H + 30)) - 15;
+      ctx.fillStyle = i % 2 ? '#295641' : '#204933';
+      ctx.fillRect(15 + (i % 3) * 12, y, 3, 20);
+      ctx.fillRect(W - 35 - (i % 3) * 12, y, 3, 20);
+    }
+    ctx.fillStyle = '#343c43'; ctx.fillRect(ROAD_X, 0, ROAD_W, H);
+    ctx.fillStyle = '#56636a'; ctx.fillRect(ROAD_X, 0, 5, H); ctx.fillRect(ROAD_X + ROAD_W - 5, 0, 5, H);
+    ctx.fillStyle = '#d1d5db';
+    for (let j = 1; j <= 2; j++) {
+      const x = ROAD_X + LANE_W * j - 2;
+      for (let y = -65 + (roadOffset % 95); y < H; y += 95) ctx.fillRect(x, y, 4, 49);
+    }
+    for (let y = -20 + (roadOffset % 65); y < H; y += 65) {
+      ctx.fillStyle = '#c4ef91';
+      ctx.fillRect(ROAD_X + 8, y, 4, 12); ctx.fillRect(ROAD_X + ROAD_W - 12, y, 4, 12);
+    }
+  }
+  function drawCar(x, y, color, player) {
+    ctx.save(); ctx.translate(x, y);
+    roundedRect(-CAR_W / 2 - 4, -CAR_H / 2 + 12, 8, 22, 3, '#101719');
+    roundedRect(CAR_W / 2 - 4, -CAR_H / 2 + 12, 8, 22, 3, '#101719');
+    roundedRect(-CAR_W / 2 - 4, CAR_H / 2 - 34, 8, 22, 3, '#101719');
+    roundedRect(CAR_W / 2 - 4, CAR_H / 2 - 34, 8, 22, 3, '#101719');
+    const body = ctx.createLinearGradient(-CAR_W / 2, 0, CAR_W / 2, 0);
+    body.addColorStop(0, player ? '#26b9c7' : '#ff874d');
+    body.addColorStop(0.5, color);
+    body.addColorStop(1, player ? '#167f98' : '#bc3f47');
+    roundedRect(-CAR_W / 2, -CAR_H / 2, CAR_W, CAR_H, 11, body, player ? '#9af7ec' : '#ffbc87');
+    roundedRect(-CAR_W / 2 + 7, -CAR_H / 2 + 13, CAR_W - 14, 23, 6, player ? '#b9edf4' : '#d5f0f0');
+    roundedRect(-CAR_W / 2 + 8, -CAR_H / 2 + 41, CAR_W - 16, 14, 4, player ? '#187e94' : '#672f34');
+    roundedRect(-CAR_W / 2 + 4, -CAR_H / 2 + 4, 8, 5, 2, '#fff3ab');
+    roundedRect(CAR_W / 2 - 12, -CAR_H / 2 + 4, 8, 5, 2, '#fff3ab');
+    roundedRect(-CAR_W / 2 + 4, CAR_H / 2 - 9, 9, 4, 2, '#ff3b45');
+    roundedRect(CAR_W / 2 - 13, CAR_H / 2 - 9, 9, 4, 2, '#ff3b45');
+    if (player) { ctx.fillStyle = 'rgba(255,255,255,.23)'; ctx.fillRect(-2, -CAR_H / 2 + 3, 4, CAR_H - 6); }
+    ctx.restore();
+  }
+  function drawStar(x, y) {
+    ctx.save(); ctx.translate(x, y); ctx.rotate(y * 0.01);
+    ctx.fillStyle = '#ffe879'; ctx.strokeStyle = '#fff7c2'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let k = 0; k < 10; k++) {
+      const a = -Math.PI / 2 + k * Math.PI / 5, r = k % 2 ? 8 : 15;
+      if (k === 0) ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+      else ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+    }
+    ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.restore();
+  }
+  function draw() {
+    ctx.clearRect(0, 0, W, H); drawRoad();
+    coins.forEach(c => drawStar(laneCenter(c.lane), c.y));
+    obstacles.forEach(o => drawCar(laneCenter(o.lane), o.y, o.color, false));
+    drawCar(laneCenter(lane), CAR_Y, '#25b9ca', true);
+    if (!running) {
+      ctx.fillStyle = 'rgba(3,13,15,.68)'; ctx.fillRect(0, 0, W, H); ctx.textAlign = 'center';
+      ctx.fillStyle = '#b8ff69'; ctx.font = '800 32px system-ui'; ctx.fillText(over ? 'CRASH!' : 'THREE ROADS', W / 2, H / 2 - 30);
+      ctx.fillStyle = '#fff'; ctx.font = '600 16px system-ui'; ctx.fillText(over ? 'Your score: ' + score : 'One car. Three lanes.', W / 2, H / 2 + 5);
+      ctx.fillStyle = '#c2d3d3'; ctx.font = '14px system-ui'; ctx.fillText(over ? 'Press PLAY AGAIN to race again' : 'Avoid cars. Collect stars.', W / 2, H / 2 + 33);
+    }
+  }
+  function move(direction) {
+    if (running) lane = Math.max(0, Math.min(2, lane + direction));
+  }
+  function crash() {
+    running = false; over = true;
+    if (score > best) {
+      best = score; bestEl.textContent = String(best);
+      try { localStorage.setItem('threeRoadsBest', String(best)); } catch (_) {}
+    }
+    statusEl.textContent = '💥 Crash! Try again and beat your best score.';
+    startBtn.textContent = '▶ PLAY AGAIN'; draw();
+  }
+  function start() {
+    if (animationId) cancelAnimationFrame(animationId);
+    lane = 1; obstacles = []; coins = []; score = 0; speed = 240;
+    spawnClock = 0.5; coinClock = 2.5; roadOffset = 0;
+    running = true; over = false; lastTime = performance.now();
+    scoreEl.textContent = '0'; speedEl.textContent = '1.0x';
+    statusEl.textContent = 'Drive safe and dodge the traffic!'; startBtn.textContent = '↻ RESTART';
+    animationId = requestAnimationFrame(loop);
+  }
+  function loop(now) {
+    if (!running) return;
+    const dt = Math.min((now - lastTime) / 1000, 0.04); lastTime = now;
+    roadOffset = (roadOffset + speed * dt) % 95;
+    speed = 240 + Math.min(score * 1.8, 220);
+    spawnClock -= dt;
+    if (spawnClock <= 0) {
+      const obstacleLane = Math.floor(Math.random() * 3);
+      const colors = ['#ff965f', '#ef5264', '#efbd62', '#a98cff'];
+      obstacles.push({ lane: obstacleLane, y: -60, color: colors[Math.floor(Math.random() * colors.length)] });
+      spawnClock = Math.max(0.43, 1.05 - score / 1800) + Math.random() * 0.35;
+    }
+    coinClock -= dt;
+    if (coinClock <= 0) {
+      coins.push({ lane: Math.floor(Math.random() * 3), y: -20 });
+      coinClock = 3 + Math.random() * 2;
+    }
+    obstacles.forEach(o => { o.y += speed * dt; });
+    coins.forEach(c => { c.y += speed * dt; });
+    obstacles = obstacles.filter(o => o.y < H + 60);
+    for (const o of obstacles) {
+      if (o.lane === lane && Math.abs(o.y - CAR_Y) < (CAR_H / 2 + 27)) { crash(); return; }
+    }
+    coins = coins.filter(c => {
+      if (c.lane === lane && Math.abs(c.y - CAR_Y) < 42) { score += 25; return false; }
+      return c.y < H + 20;
+    });
+    score += Math.floor(dt * 10);
+    scoreEl.textContent = String(score); speedEl.textContent = (speed / 240).toFixed(1) + 'x';
+    draw(); animationId = requestAnimationFrame(loop);
+  }
+  document.getElementById('left').addEventListener('click', () => move(-1));
+  document.getElementById('right').addEventListener('click', () => move(1));
+  startBtn.addEventListener('click', start);
+  window.addEventListener('keydown', e => {
+    if (['ArrowLeft', 'ArrowRight', 'a', 'A', 'd', 'D'].includes(e.key)) {
+      e.preventDefault();
+      if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') move(-1); else move(1);
+    } else if ((e.key === 'Enter' || e.key === ' ') && !running) {
+      e.preventDefault(); start();
+    }
+  });
+  canvas.addEventListener('pointerdown', e => {
+    if (!running) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width * W;
+    move(x < W / 2 ? -1 : 1);
+  });
+  draw();
+})();
+</script>
+</body>
+</html>
